@@ -454,6 +454,14 @@
         </div>
 
         <div class="panel">
+          <div class="panel-header"><h2><i class="fas fa-users" aria-hidden="true"></i> Who can join</h2></div>
+          <div class="panel-body">
+            <p class="setting-hint" style="margin-bottom: 12px;">These switches apply right away. Restart the server if it's running.</p>
+            <div class="checklist" id="joinOptions"></div>
+          </div>
+        </div>
+
+        <div class="panel">
           <div class="panel-header"><h2><i class="fas fa-gamepad" aria-hidden="true"></i> Gameplay</h2></div>
           <div class="panel-body">
             <div class="properties-grid">
@@ -516,6 +524,19 @@
               </div>
             </div>
             <p class="setting-hint" style="margin-top: 12px;">Seed and world type only apply to a newly generated world (Worlds, then Regenerate).</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><h2><i class="fas fa-folder" aria-hidden="true"></i> Server folder</h2></div>
+          <div class="panel-body">
+            <label class="sr-only" for="serverDirInput">Server folder</label>
+            <div class="directory-selector">
+              <input type="text" class="form-input" id="serverDirInput" readonly>
+              <button class="btn btn-secondary" id="migrateBtn" onclick="chooseServerDirectory()" aria-describedby="migrateHint"><i class="fas fa-truck-moving" aria-hidden="true"></i> Migrate</button>
+              <button class="icon-btn" onclick="mchost.openDirectory()" aria-label="Open server folder"><i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i></button>
+            </div>
+            <p class="setting-hint" id="migrateHint" style="margin-top: 8px;"></p>
           </div>
         </div>
 
@@ -602,19 +623,7 @@
           </div>
         </div>
 
-        <div class="grid-2">
-          <div class="panel">
-            <div class="panel-header"><h2><i class="fas fa-folder" aria-hidden="true"></i> Server folder</h2></div>
-            <div class="panel-body">
-              <label class="sr-only" for="serverDirInput">Server folder</label>
-              <div class="directory-selector">
-                <input type="text" class="form-input" id="serverDirInput" readonly>
-                <button class="btn btn-secondary" onclick="chooseServerDirectory()">Change</button>
-                <button class="icon-btn" onclick="mchost.openDirectory()" aria-label="Open server folder"><i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i></button>
-              </div>
-              <p class="setting-hint" style="margin-top: 8px;">Use your fastest drive (SSD) with the most free space.</p>
-            </div>
-          </div>
+        <div>
           <div class="panel">
             <div class="panel-header">
               <h2><i class="fab fa-java" aria-hidden="true"></i> Java</h2>
@@ -670,8 +679,14 @@
                   <input type="search" class="form-input" id="modSearchInput" placeholder="Search">
                   <button class="btn btn-primary" type="submit">Search</button>
                 </form>
+                <div class="segmented browse-tabs" role="group" aria-label="Browse lists" id="browseTabs">
+                  <button type="button" data-list="recommended" aria-pressed="true"><i class="fas fa-star" aria-hidden="true"></i> Recommended</button>
+                  <button type="button" data-list="popular" aria-pressed="false"><i class="fas fa-fire" aria-hidden="true"></i> Popular</button>
+                  <button type="button" data-list="trending" aria-pressed="false"><i class="fas fa-arrow-trend-up" aria-hidden="true"></i> Trending</button>
+                </div>
+                <p class="setting-hint" id="browseHint"></p>
                 <div class="search-results" id="modSearchResults" aria-live="polite">
-                  <div class="file-empty"><i class="fas fa-magnifying-glass" aria-hidden="true"></i><p>Search by name, or press Search to see the most popular for your version.</p></div>
+                  <div class="file-empty"><i class="fas fa-magnifying-glass" aria-hidden="true"></i><p>Search by name, or pick a list above.</p></div>
                 </div>
                 <div class="search-more hidden" id="modSearchMore"><button class="btn btn-ghost btn-sm" onclick="searchMods(true)">Load more</button></div>
               </div>

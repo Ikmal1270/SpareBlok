@@ -16,7 +16,11 @@ let commandHistory = [];
 let historyIndex = -1;
 let selectedType = 'paper';
 let versionCache = {};
-let modSearch = { query: '', offset: 0, total: 0 };
+let modSearch = { list: 'recommended', query: '', offset: 0, total: 0, key: '' };
+let modSearchToken = 0;
+let restartPending = false;
+let joinOptions = null;
+let bedrockLanPort = null;
 let installedModIds = new Set();
 let perfDirty = false;
 let lanAddress = '';
@@ -35,7 +39,6 @@ const LIMIT_ICONS = { ram: 'fa-memory', cpu: 'fa-microchip', disk: 'fa-hdd', net
 const STATE_LABELS = { offline: 'Offline', starting: 'Starting...', online: 'Online', stopping: 'Stopping...' };
 
 const TOGGLES = [
-  ['onlineMode', 'Online Mode', 'Verify players with Mojang accounts (turn off only for LAN/offline play)', true],
   ['whitelist', 'Whitelist', 'Only whitelisted players can join', false],
   ['pvp', 'PVP', 'Allow players to attack each other', true],
   ['hardcore', 'Hardcore', 'Players are banned upon death', false],
@@ -180,6 +183,14 @@ function setupEventListeners() {
   // Delegated clicks for dynamic lists
   document.getElementById('modList').addEventListener('click', onModListClick);
   document.getElementById('modSearchResults').addEventListener('click', onSearchResultClick);
+  document.getElementById('browseTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-list]');
+    if (btn) browseMods(btn.dataset.list);
+  });
+  document.getElementById('joinOptions').addEventListener('change', onJoinOptionChange);
+  document.getElementById('joinOptions').addEventListener('click', (e) => {
+    if (e.target.closest('[data-action="login-plugin"]')) installLoginPlugin();
+  });
   document.getElementById('fileList').addEventListener('click', onFileListClick);
   document.getElementById('fileBreadcrumb').addEventListener('click', (e) => {
     const item = e.target.closest('[data-path]');
@@ -199,12 +210,14 @@ function setupEventListeners() {
   mchost.onServerOutput((data) => appendConsole(data));
   mchost.onServerState((s) => {
     serverState = s.state;
+    restartPending = !!s.restartPending;
     if (s.players) onlinePlayers = s.players;
     document.getElementById('restartNotice').classList.toggle('hidden', !s.restartPending);
     updateServerStatus();
     if (s.state === 'online') showToast('Server is online', 'success');
     if (s.state === 'offline' && s.crashed) showToast('Server crashed - check the console', 'error');
     if (s.state === 'offline') refreshFilesIfVisible();
+    updateFolderPanel();
   });
   mchost.onPlayers((list) => {
     onlinePlayers = list;
@@ -244,6 +257,7 @@ function navigateTo(page) {
   if (page === 'players') refreshPlayers();
   if (page === 'performance') updateRamVisual();
   if (page === 'mods') refreshMods();
+  if (page === 'properties') refreshJoinOptions();
   if (page === 'worlds') refreshWorlds();
   if (page === 'backups') refreshBackups();
   if (page === 'network') refreshNetwork();
@@ -707,6 +721,125 @@ function updatePropertiesPage() {
     document.getElementById('prop_' + key).checked = cfg[key] ?? def;
   }
   renderMotdPreview();
+  updateFolderPanel();
+}
+
+// --- Who can join: Bedrock, other Java versions, TLauncher ---
+// These apply right away (they install or switch plugins), separate from Save changes.
+async function refreshJoinOptions() {
+  const res = await mchost.getCrossplay();
+  if (res.success === false) return;
+  joinOptions = res;
+  renderJoinOptions();
+}
+
+function joinRow({ key, icon, title, desc, on, supported = true, fixed, extra = '' }) {
+  const control = fixed
+    ? '<span class="tag good">Always on</span>'
+    : supported
+      ? `<label class="toggle-switch">
+          <input type="checkbox" data-feature="${key}" ${on ? 'checked' : ''} aria-labelledby="join_${key}" aria-describedby="join_${key}_desc">
+          <span class="toggle-slider"></span>
+        </label>`
+      : '<span class="tag">Not available</span>';
+  return `
+    <div class="check-item ${on || fixed ? 'done' : ''}">
+      <div class="check-icon"><i class="${icon}" aria-hidden="true"></i></div>
+      <div class="check-info">
+        <span class="check-title" id="join_${key}">${title}</span>
+        <span class="check-desc" id="join_${key}_desc">${desc}</span>
+        ${extra}
+      </div>
+      ${control}
+    </div>`;
+}
+
+function renderJoinOptions() {
+  const el = document.getElementById('joinOptions');
+  if (!currentConfig.launch || !joinOptions) {
+    el.innerHTML = '<p class="setting-hint">Install a server on the Mod Loader page first.</p>';
+    return;
+  }
+  const c = joinOptions;
+  const version = currentConfig.installedVersion;
+  const login = c.loginPlugin;
+  let loginExtra = '';
+  if (c.offlineMode && login && !login.installed) {
+    loginExtra = `<div style="margin-top: 8px;"><button class="btn btn-secondary btn-sm" data-action="login-plugin"><i class="fas fa-lock" aria-hidden="true"></i> Install ${escapeHtml(login.title)}</button></div>`;
+  } else if (c.offlineMode && login?.installed) {
+    loginExtra = `<span class="check-desc"><i class="fas fa-lock" aria-hidden="true"></i> ${escapeHtml(login.title)} is installed. New players type <code>/register password password</code>, then <code>/login password</code> when they come back.</span>`;
+  }
+  el.innerHTML = [
+    joinRow({
+      key: 'java', icon: 'fab fa-java', title: 'Java Edition', fixed: true,
+      desc: `The official launcher on Minecraft ${escapeHtml(version)}.`,
+    }),
+    joinRow({
+      key: 'bedrock', icon: 'fas fa-mobile-screen', title: 'Bedrock Edition', on: c.bedrock.enabled, supported: c.bedrock.supported,
+      desc: c.bedrock.supported
+        ? `Phones, tablets, Windows 10/11 and consoles join on port ${c.bedrock.port} (UDP). Installs Geyser and Floodgate. Works best on the newest Minecraft version, because Bedrock players always run the latest one.`
+        : 'Switch to Paper, Purpur, Fabric or NeoForge on the Mod Loader page to let Bedrock players join.',
+    }),
+    joinRow({
+      key: 'via', icon: 'fas fa-code-branch', title: 'Other Java versions', on: c.via.enabled, supported: c.via.supported,
+      desc: c.via.supported
+        ? `Players on older or newer versions can join, not only ${escapeHtml(version)}. Installs ViaVersion and ViaBackwards.`
+        : 'Switch to Paper or Purpur on the Mod Loader page to let players on other versions join.',
+    }),
+    joinRow({
+      key: 'offline', icon: 'fas fa-key', title: 'TLauncher and non-premium players', on: c.offlineMode,
+      desc: 'Turns off Mojang account checks (online-mode=false), so players without a paid account can join. Anyone can then use any name, so turn on the whitelist or install a login plugin.',
+      extra: loginExtra,
+    }),
+  ].join('');
+}
+
+async function onJoinOptionChange(e) {
+  const input = e.target.closest('input[data-feature]');
+  if (!input) return;
+  const feature = input.dataset.feature;
+  const on = input.checked;
+  if (feature === 'offline' && on) {
+    const ok = await confirmDialog('Allow TLauncher and non-premium players?',
+      'Mojang account checks will be off. Anyone can join with any name, including yours, so also turn on the whitelist or install a login plugin.<br><br>' +
+      'Players who already played here start with an empty inventory, because offline mode gives each player a different ID.',
+      'Allow', true);
+    if (!ok) {
+      input.checked = false;
+      return;
+    }
+  }
+  input.disabled = true;
+  const res = await mchost.setCrossplay({ feature, on });
+  if (res.success === false) {
+    showToast(res.error, 'error');
+  } else {
+    joinOptions = res;
+    currentConfig = await mchost.getConfig();
+    showToast(serverState === 'offline' ? 'Saved' : 'Saved. Restart the server to apply it.', 'success');
+  }
+  renderJoinOptions();
+  refreshModsCount();
+}
+
+async function installLoginPlugin() {
+  const res = await mchost.installLoginPlugin();
+  if (res.success === false) return showToast(res.error, 'error');
+  joinOptions = res;
+  showToast(`Installed ${res.loginPlugin.title}`, 'success');
+  renderJoinOptions();
+  refreshModsCount();
+}
+
+// --- Server folder ---
+// Migrating needs the server fully stopped, with no crash auto-restart pending.
+function updateFolderPanel() {
+  document.getElementById('serverDirInput').value = currentConfig.serverDirectory || '';
+  const offline = serverState === 'offline' && !restartPending;
+  document.getElementById('migrateBtn').disabled = !offline;
+  document.getElementById('migrateHint').textContent = offline
+    ? 'Moves your worlds, mods, server software and backups to another folder or drive. Pick your fastest drive (SSD) with the most free space.'
+    : 'Stop the server to migrate it.';
 }
 
 async function saveProperties() {
@@ -783,7 +916,6 @@ function updateModLoaderPage() {
     card.setAttribute('aria-pressed', String(card.dataset.type === selectedType));
     card.querySelector('.installed-flag').classList.toggle('hidden', !(cfg.launch && card.dataset.type === cfg.installedType));
   });
-  document.getElementById('serverDirInput').value = cfg.serverDirectory || '';
   if (cfg.launch) {
     document.getElementById('installedValue').textContent = `${TYPE_LABELS[cfg.installedType]} ${cfg.installedVersion}`;
     document.getElementById('installedDetail').textContent =
@@ -890,14 +1022,32 @@ async function installServer() {
 }
 
 async function chooseServerDirectory() {
-  if (serverState !== 'offline') return showToast('Stop the server first', 'warning');
+  if (serverState !== 'offline' || restartPending) return showToast('Stop the server first', 'warning');
   const dir = await mchost.selectDirectory();
   if (!dir) return;
-  const ok = await confirmDialog('Change server folder?',
-    `SpareBlok will use <code>${escapeHtml(dir)}</code>. If that folder already contains a server, re-install the matching software/version on this page so SpareBlok knows how to start it.`,
-    'Use this folder');
-  if (!ok) return;
-  currentConfig = await mchost.saveConfig({ serverDirectory: dir, launch: null, installedType: '', installedVersion: '' });
+  const choice = await showModal({
+    title: 'Migrate server folder?',
+    body: `<p><strong>Move my server</strong> moves your worlds, mods, installed software and backups to <code>${escapeHtml(dir)}</code>. ` +
+      'Everything keeps working, no reinstall needed.</p>' +
+      '<p><strong>Start a separate server</strong> leaves your current server where it is and uses the new folder from scratch. ' +
+      'If that folder already contains a server, re-install the matching software and version on this page so SpareBlok knows how to start it.</p>',
+    actions: [
+      { label: 'Cancel', value: null, cls: 'btn-ghost' },
+      { label: 'Start a separate server', value: 'switch', cls: 'btn-secondary' },
+      { label: 'Move my server', value: 'move', cls: 'btn-primary' },
+    ],
+  });
+  if (!choice) return;
+  if (serverState !== 'offline' || restartPending) return showToast('Stop the server first', 'warning');
+  if (choice === 'move') {
+    const result = await mchost.moveServerDirectory(dir);
+    if (result?.success === false) return showToast('Move failed: ' + result.error, 'error');
+    currentConfig = await mchost.getConfig();
+  } else {
+    currentConfig = await mchost.saveConfig({ serverDirectory: dir, launch: null, installedType: '', installedVersion: '' });
+  }
+  updateFolderPanel();
+  refreshJoinOptions();
   updateModLoaderPage();
   updateDashboard();
   systemInfo = await mchost.getSystemInfo();
@@ -999,6 +1149,11 @@ async function refreshMods() {
   }
   document.getElementById('navModsCount').textContent = res.items.filter((m) => m.enabled).length || '';
   renderRecommended();
+  const key = `${type} ${currentConfig.installedVersion}`;
+  if (modSearch.key !== key) {
+    modSearch.key = key;
+    browseMods('recommended');
+  }
 }
 
 async function onModListClick(e) {
@@ -1032,13 +1187,37 @@ function openModsFolder() {
   mchost.listMods().then((res) => res.folder && mchost.openDirectory(res.folder));
 }
 
-async function searchMods(more = false) {
+const BROWSE_HINTS = {
+  recommended: 'Hand-picked for most servers. Only ones that support your version are shown.',
+  popular: 'Most downloaded of all time.',
+  trending: 'New in the last 6 months, ranked by how many people follow them.',
+  search: '',
+};
+
+function browseMods(list) {
+  document.getElementById('modSearchInput').value = '';
+  loadModResults(list, '');
+}
+
+function searchMods(more = false) {
+  if (more) return loadModResults(modSearch.list, modSearch.query, true);
+  const query = document.getElementById('modSearchInput').value.trim();
+  return loadModResults(query ? 'search' : 'popular', query);
+}
+
+async function loadModResults(list, query, more = false) {
   const results = document.getElementById('modSearchResults');
+  const token = ++modSearchToken;
   if (!more) {
-    modSearch = { query: document.getElementById('modSearchInput').value.trim(), offset: 0, total: 0 };
-    results.innerHTML = '<div class="file-empty"><div class="loading-spinner"></div><p>Searching Modrinth...</p></div>';
+    modSearch = { ...modSearch, list, query, offset: 0, total: 0 };
+    document.querySelectorAll('#browseTabs [data-list]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.list === list)));
+    document.getElementById('browseHint').textContent = BROWSE_HINTS[list];
+    results.innerHTML = '<div class="file-empty"><div class="loading-spinner"></div><p>Loading from Modrinth...</p></div>';
   }
-  const res = await mchost.searchMods({ query: modSearch.query, offset: modSearch.offset });
+  const res = list === 'search'
+    ? await mchost.searchMods({ query, offset: modSearch.offset })
+    : await mchost.discoverMods({ list, offset: modSearch.offset });
+  if (token !== modSearchToken) return; // a newer tab or search replaced this one
   if (res.success === false) {
     results.innerHTML = `<div class="file-empty"><i class="fas fa-exclamation-triangle"></i><p>${escapeHtml(res.error)}</p></div>`;
     return;
@@ -1049,7 +1228,8 @@ async function searchMods(more = false) {
     <div class="search-item" data-id="${escapeHtml(h.id)}">
       ${h.iconUrl ? `<img class="mod-icon" src="${escapeHtml(h.iconUrl)}" alt="">` : '<div class="mod-icon placeholder"><i class="fas fa-cube"></i></div>'}
       <div class="mod-info">
-        <span class="mod-name">${escapeHtml(h.title)} <small>by ${escapeHtml(h.author)}</small></span>
+        <span class="mod-name">${escapeHtml(h.title)}${h.author ? ` <small>by ${escapeHtml(h.author)}</small>` : ''}</span>
+        ${h.why ? `<span class="mod-why"><i class="fas fa-star" aria-hidden="true"></i> ${escapeHtml(h.why)}</span>` : ''}
         <span class="mod-desc">${escapeHtml(h.description)}</span>
         <span class="mod-file"><i class="fas fa-download"></i> ${formatNumber(h.downloads)}
           ${h.serverSide === 'required' ? '<span class="feature-tag good">server-side</span>' : ''}
@@ -1581,9 +1761,10 @@ async function refreshFirewall() {
   const fw = await mchost.getFirewallStatus();
   const port = currentConfig.port;
   const fwDesc = document.getElementById('firewallDesc');
+  const ports = bedrockLanPort ? `Ports ${port} and ${bedrockLanPort} (Bedrock)` : `Port ${port}`;
   if (!fw || fw.success === false || !fw.supported) fwDesc.textContent = 'Not available on this system.';
-  else if (fw.allowed) fwDesc.textContent = `Port ${port} is allowed for incoming connections.`;
-  else fwDesc.textContent = `Port ${port} may be blocked. Windows usually asks on first start. Allowing it needs administrator approval.`;
+  else if (fw.allowed) fwDesc.textContent = `${ports} ${bedrockLanPort ? 'are' : 'is'} allowed for incoming connections.`;
+  else fwDesc.textContent = `${ports} may be blocked. Windows usually asks on first start. Allowing it needs administrator approval.`;
   document.getElementById('checkFirewall').classList.toggle('done', !!fw?.allowed);
   document.getElementById('firewallBtn').classList.toggle('hidden', !!fw?.allowed);
 }
@@ -1600,6 +1781,11 @@ function applyNetworkInfo(info) {
       <code class="connect-address">${escapeHtml(a.address + suffix)}</code>
       <button class="icon-btn" data-copy="${escapeHtml(a.address + suffix)}" aria-label="Copy ${escapeHtml(a.address + suffix)}"><i class="far fa-copy" aria-hidden="true"></i></button>
     </div>`).join('') : '<p class="setting-hint">No network adapter is connected.</p>';
+  bedrockLanPort = info.bedrockPort || null;
+  if (bedrockLanPort && info.local.length) {
+    document.getElementById('lanAddresses').insertAdjacentHTML('beforeend',
+      `<p class="setting-hint" style="margin-top: 8px;"><i class="fas fa-mobile-screen" aria-hidden="true"></i> Bedrock players: Servers tab, Add Server, the same address and port <code>${bedrockLanPort}</code>.</p>`);
+  }
   document.getElementById('upnpToggle').checked = !!info.upnp;
   document.getElementById('checkUpnp').classList.toggle('done', !!info.upnp);
   updateJoinAddress();
@@ -1681,6 +1867,8 @@ function renderPlayit(s) {
         <button class="btn btn-primary" onclick="copyText(document.getElementById('playitAddress').textContent)"><i class="far fa-copy" aria-hidden="true"></i> Copy</button>
       </div>
       ${s.numericAddress && s.numericAddress !== s.address ? `<p class="setting-hint" style="margin-top: 6px;">If it doesn't connect, try <code>${escapeHtml(s.numericAddress)}</code>.</p>` : ''}
+      ${s.bedrockAddress ? `<p class="setting-hint" style="margin-top: 6px;"><i class="fas fa-mobile-screen" aria-hidden="true"></i> Bedrock players: Server Address <code>${escapeHtml(s.bedrockAddress.host)}</code>, Port <code>${escapeHtml(String(s.bedrockAddress.port))}</code></p>` : ''}
+      ${s.bedrockMessage ? `<p class="setting-hint warn-text" style="margin-top: 6px;">${escapeHtml(s.bedrockMessage)}</p>` : ''}
       <div class="tunnel-actions">
         <button class="btn btn-ghost btn-sm" onclick="mchost.openExternal('https://playit.gg/account/tunnels')"><i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i> playit dashboard</button>
         <button class="btn btn-ghost btn-sm" onclick="playitDisable()">Turn off</button>

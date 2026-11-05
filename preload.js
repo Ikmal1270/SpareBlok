@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('mchost', {
   deleteMod: invoke('delete-mod'),
   addModFiles: invoke('add-mod-files'),
   searchMods: invoke('search-mods'),
+  discoverMods: invoke('discover-mods'),
   installMod: invoke('install-mod'),
   recommendedMods: invoke('recommended-mods'),
   installRecommendedMods: invoke('install-recommended-mods'),
@@ -72,6 +73,7 @@ contextBridge.exposeInMainWorld('mchost', {
 
   // Files
   selectDirectory: invoke('select-directory'),
+  moveServerDirectory: invoke('move-server-directory'),
   openDirectory: invoke('open-directory'),
   openExternal: invoke('open-external'),
   listServerFiles: invoke('list-server-files'),
@@ -86,6 +88,9 @@ contextBridge.exposeInMainWorld('mchost', {
   addFirewallRule: invoke('add-firewall-rule'),
   upnpOpen: invoke('upnp-open'),
   upnpClose: invoke('upnp-close'),
+  getCrossplay: invoke('get-crossplay'),
+  setCrossplay: invoke('set-crossplay'),
+  installLoginPlugin: invoke('install-login-plugin'),
   playitStatus: invoke('playit-status'),
   playitEnable: invoke('playit-enable'),
   playitOpenClaim: invoke('playit-open-claim'),

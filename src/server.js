@@ -6,6 +6,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { writeProperties } = require('./properties');
+const { parseRam } = require('./capacity');
+
+// "1.5G" -> 1536, "512M" -> 512. Never below 512 MB, which no server can start in.
+function heapMB(value) {
+  return Math.max(512, Math.round(parseRam(value) * 1024));
+}
 
 const PRIORITIES = {
   low: os.constants.priority.PRIORITY_BELOW_NORMAL,
@@ -67,9 +73,12 @@ class ServerManager extends EventEmitter {
   buildArgs(cfg) {
     const extra = (cfg.jvmArgs || '').split(/\s+/).filter(Boolean)
       .filter((a) => !/^-Xm[xs]/i.test(a)); // RAM comes from the sliders
+    // Java only takes whole numbers ("-Xmx1.5G" refuses to start), so pass megabytes.
+    const maxMB = heapMB(cfg.maxRam);
+    const minMB = Math.min(heapMB(cfg.minRam), maxMB);
     const args = [
-      `-Xmx${cfg.maxRam}`,
-      `-Xms${cfg.minRam}`,
+      `-Xmx${maxMB}M`,
+      `-Xms${minMB}M`,
       ...extra,
       '-Dfile.encoding=UTF-8',
       '-Dlog4j2.formatMsgNoLookups=true', // Log4Shell mitigation for old versions

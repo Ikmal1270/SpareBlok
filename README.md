@@ -77,6 +77,7 @@ You can read the whole script in [`scripts/install.ps1`](scripts/install.ps1).
 - **It tunes itself.** Auto-Optimize picks RAM, view distance, simulation distance, and JVM flags, and always leaves enough RAM for Windows.
 - **Friends can join without port forwarding.** The playit.gg tunnel works even behind CGNAT, which is common on mobile and 5G broadband.
 - **Any popular server type, in one click.** Choose Vanilla, Paper, Purpur, Fabric, Forge, or NeoForge. The correct Java is detected or downloaded for you.
+- **Bedrock, other versions, and TLauncher players can join too.** One switch each lets in Bedrock Edition players (phones, Windows, consoles), players on other Java versions, and players using TLauncher or other non-premium launchers.
 - **Mods without the hunting.** Search Modrinth from inside the app, or install a "Recommended for old PCs" pack.
 
 <table>
@@ -130,7 +131,7 @@ The estimate updates live as you move the sliders. It also gives tips, such as l
 - **Automatic Java:** a portable Temurin JRE is downloaded if needed. Nothing is installed system-wide.
 - **Forge and NeoForge** installers run headless, and the app detects the correct launch method (`win_args.txt` or jar).
 - **Mods & Plugins manager:**
-  - Search and install from Modrinth, filtered to your loader and version, with required dependencies installed automatically.
+  - Browse Recommended, Popular, and Trending lists, or search Modrinth, filtered to your loader and version, with required dependencies installed automatically.
   - Drag and drop your own `.jar` files.
   - Enable, disable, or delete each mod.
   - One-click "Recommended for old PCs" packs (Lithium, FerriteCore, Krypton, ModernFix, Chunky, spark).
@@ -146,6 +147,12 @@ Three options, easiest first:
 1. **Internet with playit.gg (recommended).** One button downloads the official signed playit agent, opens playit.gg so you can approve the app, and creates a Minecraft Java tunnel automatically. You get a permanent public address with no router setup.
 2. **Same Wi-Fi / LAN.** Works immediately with this PC's local address.
 3. **Port forwarding (advanced).** Public IP with CGNAT detection, a Windows Firewall rule, automatic router forwarding via UPnP, and a manual guide.
+
+**Who can join** (Server Properties):
+
+- **Bedrock Edition:** installs Geyser and Floodgate (Paper, Purpur, Fabric, NeoForge). Bedrock players use UDP port 19132, which the playit tunnel, firewall rule, and UPnP open too.
+- **Other Java versions:** installs ViaVersion and ViaBackwards (Paper, Purpur).
+- **TLauncher and non-premium players:** turns off Mojang account checks (`online-mode=false`), with a one-click login plugin (AuthMe Reloaded or EasyAuth) so nobody can join under someone else's name.
 
 </details>
 
@@ -182,7 +189,8 @@ You're being asked to run an app on your PC, so here's exactly what it does. The
 | Mojang (`mojang.com`) | Version list and the Vanilla server | Choosing or installing server software |
 | PaperMC, PurpurMC, FabricMC, Minecraft Forge, NeoForged | Versions and server software | Choosing or installing that software |
 | Eclipse Adoptium (`api.adoptium.net`) | Temurin Java download | When the right Java isn't already on your PC |
-| Modrinth (`api.modrinth.com`) | Mod search and downloads | Using the Mods & Plugins manager |
+| Modrinth (`api.modrinth.com`) | Mod search and downloads | Using the Mods & Plugins manager, or turning on Bedrock or other-version support |
+| GeyserMC (`download.geysermc.org`) | Floodgate for Paper and Purpur, checked against its SHA-256 | Turning on Bedrock support |
 | playit.gg and its GitHub releases | Agent download and tunnel | Only if you set up the playit.gg tunnel |
 | ipify, icanhazip | Showing your public IP address | Looking up your public address |
 | mc-heads.net | Head icons, which sends online players' names | Players are online |
@@ -230,7 +238,7 @@ Everything is in `%APPDATA%\mchost\`. The folder keeps the app's original name (
 | Path | Contents |
 |------|----------|
 | `server-config.json` | Settings |
-| `servers\default\` | Server files (change this in Mod Loader → Server folder) |
+| `servers\default\` | Server files. To put them on another drive, use Server Properties → Server folder → **Migrate** (the server must be stopped) |
 | `backups\` | Zipped backups |
 | `runtimes\` | Java runtimes and the playit agent |
 | `playit\` | The playit secret key and agent log |

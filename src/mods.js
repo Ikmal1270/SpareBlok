@@ -35,12 +35,37 @@ const RECOMMENDED = {
     { slug: 'modernfix', why: 'Faster startup and lower memory use' },
     { slug: 'chunky', why: 'Pre-generates the world so exploring causes less lag' },
   ],
+  // Paper and Purpur already include spark (/spark), and it isn't on Modrinth for them.
   paper: [
     { slug: 'chunky', why: 'Pre-generates the world so exploring causes less lag' },
-    { slug: 'spark', why: 'Profiler to find what causes lag' },
   ],
   purpur: [
     { slug: 'chunky', why: 'Pre-generates the world so exploring causes less lag' },
+  ],
+};
+
+// Popular picks for the Browse tab, beyond performance. Entries that don't support
+// the server's loader and version are hidden.
+const ESSENTIALS = {
+  plugins: [
+    { slug: 'luckperms', why: 'Ranks and permissions' },
+    { slug: 'essentialsx', why: 'Homes, warps, /tpa, kits and more' },
+    { slug: 'coreprotect', why: 'Look up and roll back griefing' },
+    { slug: 'worldedit', why: 'Build and edit large areas fast' },
+    { slug: 'worldguard', why: 'Protect spawn and other areas' },
+    { slug: 'skinsrestorer', why: 'Shows skins for TLauncher and other non-premium players' },
+    { slug: 'simple-voice-chat', why: 'Proximity voice chat (players install the mod too)' },
+    { slug: 'tab-was-taken', why: 'Custom player list and name tags' },
+    { slug: 'discordsrv', why: 'Links server chat with a Discord channel' },
+  ],
+  mods: [
+    { slug: 'fabric-api', why: 'Needed by most Fabric mods' },
+    { slug: 'c2me-fabric', why: 'Faster world generation using every CPU core' },
+    { slug: 'luckperms', why: 'Ranks and permissions' },
+    { slug: 'worldedit', why: 'Build and edit large areas fast' },
+    { slug: 'skinsrestorer', why: 'Shows skins for TLauncher and other non-premium players' },
+    { slug: 'simple-voice-chat', why: 'Proximity voice chat (players install the mod too)' },
+    { slug: 'no-chat-reports', why: 'Turns off chat reporting on the server' },
     { slug: 'spark', why: 'Profiler to find what causes lag' },
   ],
 };
@@ -68,6 +93,14 @@ function prettyName(file) {
     .replace(/[-_+](mc)?\d+(\.\d+)+.*$/i, '')
     .replace(/[-_]/g, ' ')
     .trim() || file;
+}
+
+// For jars installed from somewhere other than Modrinth, so they still get a proper name.
+function recordInstall(serverDir, type, file, meta) {
+  const dir = contentDir(serverDir, type);
+  const index = readIndex(dir);
+  index[file] = meta;
+  writeIndex(dir, index);
 }
 
 function listContent(serverDir, type) {
@@ -131,13 +164,14 @@ function addFiles(serverDir, type, files) {
   return added;
 }
 
-async function search({ query, type, mcVersion, offset = 0, limit = 20 }) {
+async function search({ query, type, mcVersion, offset = 0, limit = 20, index, extraFacets = [] }) {
   const loaders = MODRINTH_LOADERS[type];
   if (!loaders) return { hits: [], total: 0 };
   const isPlugin = LOADERS[type].kind === 'plugins';
   const facets = [
     loaders.map((l) => `categories:${l}`),
     [`project_type:${isPlugin ? 'plugin' : 'mod'}`],
+    ...extraFacets,
   ];
   if (mcVersion) facets.push([`versions:${mcVersion}`]);
   if (!isPlugin) facets.push(['server_side:required', 'server_side:optional']);
@@ -145,7 +179,7 @@ async function search({ query, type, mcVersion, offset = 0, limit = 20 }) {
   const params = new URLSearchParams({
     query: query || '',
     facets: JSON.stringify(facets),
-    index: query ? 'relevance' : 'downloads',
+    index: index || (query ? 'relevance' : 'downloads'),
     offset: String(offset),
     limit: String(limit),
   });
@@ -164,6 +198,44 @@ async function search({ query, type, mcVersion, offset = 0, limit = 20 }) {
       serverSide: h.server_side,
     })),
   };
+}
+
+// Curated picks that support this loader and version, in curated order.
+async function essentials(type, mcVersion) {
+  const loaders = MODRINTH_LOADERS[type];
+  if (!loaders) return { hits: [], total: 0 };
+  const picks = ESSENTIALS[LOADERS[type].kind === 'plugins' ? 'plugins' : 'mods'];
+  const ids = encodeURIComponent(JSON.stringify(picks.map((p) => p.slug)));
+  const projects = await fetchJson(`${API}/projects?ids=${ids}`);
+  const bySlug = new Map(projects.map((p) => [p.slug, p]));
+  const hits = picks
+    .map((pick) => ({ pick, p: bySlug.get(pick.slug) }))
+    .filter(({ p }) => p && p.loaders.some((l) => loaders.includes(l)) && (!mcVersion || p.game_versions.includes(mcVersion)))
+    .map(({ pick, p }) => ({
+      id: p.id,
+      slug: p.slug,
+      title: p.title,
+      description: p.description,
+      why: pick.why,
+      downloads: p.downloads,
+      iconUrl: p.icon_url,
+      serverSide: p.server_side,
+    }));
+  return { hits, total: hits.length };
+}
+
+// "recommended" = curated picks, "popular" = all-time downloads,
+// "trending" = projects from the last 6 months that people are following.
+async function discover({ list, type, mcVersion, offset = 0 }) {
+  if (list === 'recommended') return essentials(type, mcVersion);
+  if (list === 'trending') {
+    const since = Math.floor(Date.now() / 1000) - 180 * 24 * 3600;
+    return search({
+      query: '', type, mcVersion, offset, index: 'follows',
+      extraFacets: [[`created_timestamp>${since}`], ['downloads>500']],
+    });
+  }
+  return search({ query: '', type, mcVersion, offset, index: 'downloads' });
 }
 
 async function bestVersion(projectId, type, mcVersion) {
@@ -217,6 +289,6 @@ function recommended(type) {
 }
 
 module.exports = {
-  contentDir, listContent, countEnabled, toggleContent, deleteContent, addFiles,
-  search, install, recommended,
+  contentDir, listContent, countEnabled, toggleContent, deleteContent, addFiles, recordInstall,
+  search, discover, install, recommended,
 };
