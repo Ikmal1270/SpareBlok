@@ -145,26 +145,30 @@ async function getPublicIp() {
 const FIREWALL_RULE = 'SpareBlok Minecraft Server';
 const LEGACY_FIREWALL_RULES = ['MCHost Minecraft Server', 'DIY MC Hosting Minecraft Server']; // rules created before the renames still count
 
-async function getFirewallStatus(port) {
+// `bedrockPort` (UDP only) is set while Bedrock players can join through Geyser.
+async function getFirewallStatus(port, bedrockPort = null) {
   if (process.platform !== 'win32') return { supported: false };
   const res = await runPowerShell(
     `Get-NetFirewallRule -DisplayName ${[FIREWALL_RULE, ...LEGACY_FIREWALL_RULES].map((r) => `'${r}*'`).join(',')} -ErrorAction SilentlyContinue | ` +
     `Get-NetFirewallPortFilter | Select-Object -ExpandProperty LocalPort`, 15000);
   const ports = res.stdout.split(/\s+/).filter(Boolean);
-  return { supported: true, allowed: ports.includes(String(port)) };
+  const allowed = ports.includes(String(port)) && (!bedrockPort || ports.includes(String(bedrockPort)));
+  return { supported: true, allowed };
 }
 
 // Firewall rules need admin rights, so this triggers a UAC prompt.
-async function addFirewallRule(port) {
-  const inner = ['TCP', 'UDP'].map((proto) =>
-    `New-NetFirewallRule -DisplayName '${FIREWALL_RULE} ${proto} ${port}' -Direction Inbound -Protocol ${proto} -LocalPort ${port} -Action Allow -Profile Any`,
+async function addFirewallRule(port, bedrockPort = null) {
+  const rules = [['TCP', port], ['UDP', port]];
+  if (bedrockPort) rules.push(['UDP', bedrockPort]);
+  const inner = rules.map(([proto, p]) =>
+    `New-NetFirewallRule -DisplayName '${FIREWALL_RULE} ${proto} ${p}' -Direction Inbound -Protocol ${proto} -LocalPort ${p} -Action Allow -Profile Any`,
   ).join('; ');
   const encoded = Buffer.from(inner, 'utf16le').toString('base64');
   const res = await runPowerShell(
     `try { Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','${encoded}'; 'ok' } catch { 'cancelled' }`,
     60000);
   if (!res.stdout.includes('ok')) return { success: false, error: 'Administrator permission was not granted' };
-  const status = await getFirewallStatus(port);
+  const status = await getFirewallStatus(port, bedrockPort);
   return status.allowed ? { success: true } : { success: false, error: 'Rule could not be created' };
 }
 

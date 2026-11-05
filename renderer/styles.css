@@ -785,6 +785,11 @@ code, kbd {
 .search-bar > i { color: var(--text-3); }
 .search-bar .form-input { flex: 1; }
 .search-results { margin-top: var(--s3); max-height: 560px; overflow-y: auto; }
+.browse-tabs { margin-top: var(--s3); }
+.browse-tabs button { min-height: 30px; }
+#browseHint { margin-top: var(--s2); }
+#browseHint:empty { display: none; }
+.mod-why { font-size: var(--text-xs); color: var(--accent-text); font-weight: 600; }
 .search-more { text-align: center; margin-top: var(--s2); }
 .mods-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--s4); align-items: start; }
 .mods-layout > .panel { margin-bottom: 0; }

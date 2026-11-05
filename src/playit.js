@@ -157,11 +157,16 @@ class PlayitManager extends EventEmitter {
   }
 
   // --- 3 + 4. Run agent and ensure a Minecraft tunnel -----------------------
-  async start(port) {
+  // `bedrockPort` is set while Bedrock players can join through Geyser; they get
+  // a second, UDP tunnel.
+  async start(port, bedrockPort = null) {
     if (!fs.existsSync(this.exe)) throw new PlayitError('The playit agent is not installed');
     if (!this.readSecret()) throw new PlayitError('playit is not linked yet');
+    this.bedrockPort = bedrockPort;
     this.startDaemon();
-    this.setState({ phase: 'starting', message: 'Connecting to playit...', claimUrl: null });
+    this.setState({
+      phase: 'starting', message: 'Connecting to playit...', claimUrl: null, bedrockAddress: null, bedrockMessage: null,
+    });
 
     const run = await this.api('/agents/rundata');
     const blocked = accountProblem(run.account_status);
@@ -195,10 +200,42 @@ class PlayitManager extends EventEmitter {
         return this.status();
       }
     }
+    if (bedrockPort) await this.ensureBedrockTunnel(run, bedrockPort);
     if (!tunnel) this.setState({ phase: 'creating', message: 'Waiting for playit to assign your address...' });
     else this.applyTunnel(tunnel);
+    this.applyBedrockTunnel(run);
     this.watch(port);
     return this.status();
+  }
+
+  // A Bedrock problem only shows a note; Java players can still join.
+  async ensureBedrockTunnel(run, bedrockPort) {
+    if (findBedrockTunnel(run, bedrockPort) || hasPending(run, 'minecraft-bedrock')) return;
+    try {
+      await this.api('/tunnels/create', {
+        name: 'SpareBlok Bedrock',
+        tunnel_type: 'minecraft-bedrock',
+        port_type: 'udp',
+        port_count: 1,
+        origin: { type: 'agent', data: { agent_id: run.agent_id, local_ip: '127.0.0.1', local_port: bedrockPort } },
+        enabled: true,
+        alloc: null,
+        firewall_id: null,
+        proxy_protocol: null,
+      });
+    } catch (e) {
+      this.setState({
+        bedrockMessage: `playit could not create the Bedrock tunnel (${e.message}). Add a "Minecraft Bedrock" tunnel in the playit dashboard, pointing to 127.0.0.1:${bedrockPort}.`,
+      });
+    }
+  }
+
+  // Bedrock has separate "Server Address" and "Port" boxes, so keep them apart.
+  applyBedrockTunnel(run) {
+    if (!this.bedrockPort) return;
+    const t = findBedrockTunnel(run, this.bedrockPort);
+    if (!t || !t.port) return;
+    this.setState({ bedrockAddress: { host: t.custom_domain || t.assigned_domain, port: t.port.from }, bedrockMessage: null });
   }
 
   applyTunnel(t) {
@@ -226,6 +263,7 @@ class PlayitManager extends EventEmitter {
         failures = 0;
         const t = findTunnel(run, port);
         if (t) this.applyTunnel(t);
+        this.applyBedrockTunnel(run);
       } catch (e) {
         if (++failures === 3) this.setState({ phase: 'error', message: `Lost contact with playit: ${e.message}` });
       }
@@ -267,7 +305,7 @@ class PlayitManager extends EventEmitter {
   unlink() {
     this.stop();
     fs.rmSync(this.secretFile, { force: true });
-    this.setState({ phase: 'off', address: null, numericAddress: null });
+    this.setState({ phase: 'off', address: null, numericAddress: null, bedrockAddress: null });
   }
 
   logTail(lines = 40) {
@@ -286,8 +324,15 @@ function findTunnel(run, port) {
     || null;
 }
 
-function hasPending(run) {
-  return (run.pending || []).some((p) => p.tunnel_type === 'minecraft-java');
+function findBedrockTunnel(run, port) {
+  const tunnels = run.tunnels || [];
+  return tunnels.find((t) => t.tunnel_type === 'minecraft-bedrock' && t.local_port === port)
+    || tunnels.find((t) => t.local_port === port && t.proto === 'udp')
+    || null;
+}
+
+function hasPending(run, type = 'minecraft-java') {
+  return (run.pending || []).some((p) => p.tunnel_type === type);
 }
 
 function accountProblem(status) {

@@ -76,27 +76,47 @@ class ConfigStore {
     };
   }
 
-  load() {
+  // Returns the parsed settings object, or null when the file is missing or damaged.
+  readFile(file) {
     try {
-      if (fs.existsSync(this.file)) {
-        const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-        // Configs written by version 1.0 had no launch target or setup flag.
-        if (saved.serverType === 'spigot') saved.serverType = 'paper';
-        // Untouched default MOTDs follow the current default (and its version number).
-        if (isDefaultMotd(saved.motd) && saved.motd !== this.defaultMotd) {
-          saved.motd = this.defaultMotd;
-          this.write({ ...this.defaults(), ...saved });
-        }
-        return { ...this.defaults(), ...saved };
-      }
-    } catch (e) { /* fall through to defaults */ }
-    const data = this.defaults();
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  load() {
+    const backup = this.file + '.bak';
+    let saved = this.readFile(this.file);
+    if (saved) {
+      // Last settings that loaded fine, in case a power cut damages the file later.
+      try { fs.copyFileSync(this.file, backup); } catch (e) { /* optional */ }
+    } else if (fs.existsSync(this.file)) {
+      // Damaged: keep it for inspection and fall back to the last good copy, so the
+      // installed server and its folder location aren't silently forgotten.
+      try { fs.renameSync(this.file, `${this.file}.broken-${Date.now()}`); } catch (e) { /* ignore */ }
+      saved = this.readFile(backup);
+    }
+    if (!saved) {
+      const data = this.defaults();
+      this.write(data);
+      return data;
+    }
+    // Configs written by version 1.0 had no launch target or setup flag.
+    if (saved.serverType === 'spigot') saved.serverType = 'paper';
+    // Untouched default MOTDs follow the current default (and its version number).
+    if (isDefaultMotd(saved.motd) && saved.motd !== this.defaultMotd) saved.motd = this.defaultMotd;
+    const data = { ...this.defaults(), ...saved };
     this.write(data);
     return data;
   }
 
+  // Write then rename, so a crash or power cut mid-save never leaves a half-written file.
   write(data) {
-    fs.writeFileSync(this.file, JSON.stringify(data, null, 2));
+    const tmp = this.file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, this.file);
   }
 
   get() {

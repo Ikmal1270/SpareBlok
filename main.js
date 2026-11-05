@@ -10,6 +10,7 @@ const loaders = require('./src/loaders');
 const mods = require('./src/mods');
 const backups = require('./src/backups');
 const upnp = require('./src/upnp');
+const crossplay = require('./src/crossplay');
 const { ServerManager } = require('./src/server');
 const { PlayitManager } = require('./src/playit');
 const { safeJoin } = require('./src/util');
@@ -32,6 +33,7 @@ const consoleHistory = [];
 let busyTask = null; // only one install/download at a time
 let autoBackupTimer = null;
 let backupInProgress = false;
+let migrating = false; // the server folder is being moved; nothing may start the server
 
 const ICON = path.join(__dirname, 'assets', 'icon.png');
 
@@ -121,7 +123,9 @@ async function quitApp() {
     await server.stop(45000);
   }
   if (config.get().upnp) {
-    await upnp.closePort(config.get().port).catch(() => {});
+    for (const port of [config.get().port, activeBedrockPort()].filter(Boolean)) {
+      await upnp.closePort(port).catch(() => {});
+    }
   }
   playit?.stop();
   app.quit();
@@ -158,7 +162,9 @@ app.on('before-quit', (e) => {
   isQuitting = true;
   if (server.running) {
     e.preventDefault();
-    if (server.state !== 'stopping') server.stop(30000).then(() => app.quit());
+    // Already stopping (Stop button): wait for that exit instead of never quitting.
+    if (server.state === 'stopping') server.once('exit', () => app.quit());
+    else server.stop(30000).then(() => app.quit());
     return;
   }
   server.stopMonitor();
@@ -299,6 +305,7 @@ async function startServer() {
   if (server.running) return { success: false, error: 'Server is already running' };
   if (!cfg.launch) return { success: false, error: 'No server installed yet. Go to Mod Loader and install one.' };
   if (!cfg.eulaAccepted) return { success: false, needEula: true, error: 'Please accept the Minecraft EULA first.' };
+  if (migrating) return { success: false, error: 'Wait for the server folder to finish moving.' };
 
   let javaPath;
   try {
@@ -311,11 +318,19 @@ async function startServer() {
 
   const result = server.start(config.get(), javaPath);
   if (result.success && cfg.upnp) {
-    upnp.openPort(cfg.port)
-      .then((r) => server.log(`[SpareBlok] UPnP: port ${cfg.port} forwarded to ${r.internal}${r.externalIp ? ` (public IP ${r.externalIp})` : ''}`))
-      .catch((e) => server.log(`[SpareBlok] UPnP failed: ${e.message}`));
+    for (const port of [cfg.port, activeBedrockPort()].filter(Boolean)) {
+      upnp.openPort(port)
+        .then((r) => server.log(`[SpareBlok] UPnP: port ${port} forwarded to ${r.internal}${r.externalIp ? ` (public IP ${r.externalIp})` : ''}`))
+        .catch((e) => server.log(`[SpareBlok] UPnP failed for port ${port}: ${e.message}`));
+    }
   }
   return result;
+}
+
+// The Bedrock port while Geyser is on, so the firewall, router and tunnel open it too.
+function activeBedrockPort() {
+  const bedrock = crossplay.status(config.get().serverDirectory, activeType()).bedrock;
+  return bedrock.enabled ? bedrock.port : null;
 }
 
 // --- Backups ---
@@ -528,6 +543,7 @@ handle('install-mod', (projectId) => runTask('mod', 'Installing mod', async () =
   });
   return { success: true, installed };
 }));
+handle('discover-mods', ({ list, offset }) => mods.discover({ list, offset, type: activeType(), mcVersion: activeVersion() }));
 handle('recommended-mods', () => mods.recommended(activeType()));
 handle('install-recommended-mods', () => runTask('mod', 'Installing optimization mods', async () => {
   const results = [];
@@ -590,6 +606,68 @@ handle('select-directory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'], title: 'Select Server Directory' });
   return !result.canceled && result.filePaths.length ? result.filePaths[0] : null;
 });
+// Moves the whole server (worlds, mods, installed software) and its backups to
+// another folder, so it keeps working without a reinstall.
+function isEmptyDir(dir) {
+  return !fs.existsSync(dir) || fs.readdirSync(dir).length === 0;
+}
+
+handle('move-server-directory', (target) => runTask('move', 'Moving server folder', async () => {
+  if (server.running) throw new Error('Stop the server before moving it');
+  if (backupInProgress) throw new Error('Wait for the backup to finish before moving the server');
+  server.cancelRestart(); // a pending crash auto-restart must not start the server mid-move
+  migrating = true;
+  try {
+    return await moveServerDirectory(target);
+  } finally {
+    migrating = false;
+  }
+}));
+
+async function moveServerDirectory(target) {
+  const from = path.resolve(config.get().serverDirectory);
+  let to = path.resolve(target);
+  // Picking a folder that already has things in it (like D:\Games) moves the server into a subfolder.
+  if (!isEmptyDir(to)) to = path.join(to, `${brand.SHORT_NAME} Server`);
+  if (!isEmptyDir(to)) throw new Error(`${to} is not empty. Pick an empty folder.`);
+  const fromKey = from.toLowerCase();
+  const toKey = to.toLowerCase();
+  if (toKey === fromKey || toKey.startsWith(fromKey + path.sep)) throw new Error('Pick a folder outside the current server folder');
+
+  const oldBackups = backupDir();
+  if (fs.existsSync(from)) {
+    fs.rmSync(to, { recursive: true, force: true }); // empty, checked above
+    // mkdir on a drive root (D:\) fails with EPERM even though it exists.
+    if (!fs.existsSync(path.dirname(to))) fs.mkdirSync(path.dirname(to), { recursive: true });
+    try {
+      fs.renameSync(from, to); // instant on the same drive
+    } catch (err) {
+      // EXDEV: another drive. EPERM/EBUSY/EACCES: a file is open somewhere (Explorer,
+      // antivirus), which blocks renaming the folder but not copying it.
+      if (!['EXDEV', 'EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+      try {
+        await fs.promises.cp(from, to, { recursive: true });
+      } catch (copyErr) {
+        // Leave the original untouched and remove the half-finished copy.
+        await fs.promises.rm(to, { recursive: true, force: true }).catch(() => {});
+        throw new Error(`Could not copy the server to ${to}: ${copyErr.message}`);
+      }
+      // The copy is complete, so a locked leftover file must not undo the move.
+      await fs.promises.rm(from, { recursive: true, force: true })
+        .catch(() => server.log(`[SpareBlok] Moved the server, but some old files could not be deleted from ${from}`));
+    }
+  }
+  config.update({ serverDirectory: to });
+
+  // Backups are filed per server folder; bring them along.
+  const newBackups = backupDir();
+  if (newBackups !== oldBackups) {
+    for (const f of fs.readdirSync(oldBackups)) fs.renameSync(path.join(oldBackups, f), path.join(newBackups, f));
+    fs.rmSync(oldBackups, { recursive: true, force: true });
+  }
+  server.log(`[SpareBlok] Server folder moved to ${to}`);
+  return { success: true, serverDirectory: to };
+}
 handle('open-directory', (dirPath) => shell.openPath(dirPath || config.get().serverDirectory));
 handle('open-external', (url) => {
   if (/^https:\/\//.test(url)) shell.openExternal(url);
@@ -630,24 +708,69 @@ handle('delete-server-file', (subPath) => {
 
 // Network
 // Split so the page renders instantly; the public IP and firewall lookups are slow.
-handle('get-network-info', () => ({ local: system.getLocalAddresses(), port: config.get().port, upnp: config.get().upnp }));
+handle('get-network-info', () => ({
+  local: system.getLocalAddresses(), port: config.get().port, upnp: config.get().upnp, bedrockPort: activeBedrockPort(),
+}));
 handle('get-public-ip', () => system.getPublicIp());
-handle('get-firewall-status', () => system.getFirewallStatus(config.get().port));
-handle('add-firewall-rule', () => system.addFirewallRule(config.get().port));
+handle('get-firewall-status', () => system.getFirewallStatus(config.get().port, activeBedrockPort()));
+handle('add-firewall-rule', () => system.addFirewallRule(config.get().port, activeBedrockPort()));
 handle('upnp-open', async () => {
   const r = await upnp.openPort(config.get().port);
+  const bedrock = activeBedrockPort();
+  if (bedrock) await upnp.openPort(bedrock);
   config.update({ upnp: true });
   return r;
 });
 handle('upnp-close', async () => {
   config.update({ upnp: false });
+  const bedrock = activeBedrockPort();
+  if (bedrock) await upnp.closePort(bedrock);
   return upnp.closePort(config.get().port);
 });
+
+// Who can join: Bedrock (Geyser + Floodgate), other Java versions (ViaVersion), TLauncher (offline mode)
+function crossplayStatus() {
+  const cfg = config.get();
+  return { ...crossplay.status(cfg.serverDirectory, activeType()), offlineMode: cfg.onlineMode === false, type: activeType() };
+}
+
+handle('get-crossplay', () => crossplayStatus());
+handle('set-crossplay', ({ feature, on }) => {
+  if (feature === 'offline') {
+    config.update({ onlineMode: !on });
+    return { success: true, ...crossplayStatus() };
+  }
+  const bedrockBefore = activeBedrockPort();
+  return runTask('crossplay', on ? 'Setting up cross-play' : 'Turning off cross-play', async () => {
+    await crossplay.setFeature(feature, on, {
+      serverDir: config.get().serverDirectory, type: activeType(), mcVersion: activeVersion(), onProgress: progress('crossplay'),
+    });
+    const bedrockAfter = activeBedrockPort();
+    if (bedrockAfter !== bedrockBefore) {
+      // Open or close the Bedrock port everywhere the Java port is already open.
+      if (config.get().upnp) {
+        if (bedrockAfter) upnp.openPort(bedrockAfter).catch((e) => server.log(`[SpareBlok] UPnP failed for port ${bedrockAfter}: ${e.message}`));
+        else upnp.closePort(bedrockBefore).catch(() => {});
+      }
+      if (config.get().playitEnabled && playit.status().linked) {
+        playit.stop();
+        startPlayit().catch(() => {});
+      }
+    }
+    return { success: true, ...crossplayStatus() };
+  });
+});
+handle('install-login-plugin', () => runTask('crossplay', 'Installing login plugin', async () => {
+  await crossplay.installLoginPlugin({
+    serverDir: config.get().serverDirectory, type: activeType(), mcVersion: activeVersion(), onProgress: progress('crossplay'),
+  });
+  return { success: true, ...crossplayStatus() };
+}));
 
 // playit.gg tunnel
 async function startPlayit() {
   try {
-    return { success: true, ...(await playit.start(config.get().port)) };
+    return { success: true, ...(await playit.start(config.get().port, activeBedrockPort())) };
   } catch (err) {
     playit.setState({ phase: 'error', message: err.message });
     throw err;
