@@ -3,7 +3,7 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 
-const USER_AGENT = 'SpareBlok/1.3 (by M.N.Ikmal; minecraft-server-manager)';
+const USER_AGENT = 'SpareBlok/1.4 (by M.N.Ikmal; minecraft-server-manager)';
 const REDIRECTS = [301, 302, 303, 307, 308];
 
 function request(url, { headers = {}, timeout = 20000, method = 'GET', body = null } = {}, redirects = 0) {

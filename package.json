@@ -1,6 +1,6 @@
 {
   "name": "mchost",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "SpareBlok by M.N.Ikmal. Turn an old PC into a Minecraft server: one-click install, auto Java, performance tuning, player capacity estimates and playit.gg tunnels.",
   "main": "main.js",
   "scripts": {
